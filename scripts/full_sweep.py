@@ -180,6 +180,11 @@ def main():
     retry_attempts = int(os.environ.get("LLAMA_RETRY_ATTEMPTS", "8"))
     retry_sleep_s = float(os.environ.get("LLAMA_RETRY_SLEEP_S", "0.5"))
     cell_pause_s = float(os.environ.get("LLAMA_CELL_PAUSE_S", "0.0"))
+    continue_on_error = os.environ.get("LLAMA_CONTINUE_ON_ERROR", "1").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
     requests_multiplier = int(os.environ.get("LLAMA_REQUESTS_MULTIPLIER", "1"))
     total_requests_env = os.environ.get("LLAMA_NUM_REQUESTS")
 
@@ -207,79 +212,116 @@ def main():
                     server_args = build_server_args(
                         base_args, parallel, batch_size, ubatch_size
                     )
-                    with start_llama_servers(
-                        instances,
-                        base_port=base_port,
-                        extra_args=server_args,
-                        ready_timeout_s=ready_timeout_s,
-                        startup_delay_s=startup_delay_s,
-                    ) as servers:
-                        upstreams = [
-                            (server["host"], server["port"]) for server in servers
-                        ]
-                        with start_nginx_round_robin(
-                            upstreams,
-                            listen_port=nginx_port,
-                            listen_host=servers[0]["host"],
-                        ) as proxy:
-                            if warmup_requests > 0:
-                                for _ in range(warmup_requests):
-                                    post_json_with_retry(
-                                        f"{proxy['base_url']}/completion",
-                                        {
-                                            "prompt": "warmup",
-                                            "n_predict": 8,
-                                            "temperature": 0.0,
-                                            "stream": False,
-                                        },
-                                        request_timeout,
-                                        retry_attempts,
-                                        retry_sleep_s,
-                                    )
+                    batch_label = (
+                        "default" if batch_size is None else str(batch_size)
+                    )
+                    ubatch_label = (
+                        "default" if ubatch_size is None else str(ubatch_size)
+                    )
+                    try:
+                        with start_llama_servers(
+                            instances,
+                            base_port=base_port,
+                            extra_args=server_args,
+                            ready_timeout_s=ready_timeout_s,
+                            startup_delay_s=startup_delay_s,
+                        ) as servers:
+                            upstreams = [
+                                (server["host"], server["port"]) for server in servers
+                            ]
+                            with start_nginx_round_robin(
+                                upstreams,
+                                listen_port=nginx_port,
+                                listen_host=servers[0]["host"],
+                            ) as proxy:
+                                if warmup_requests > 0:
+                                    for _ in range(warmup_requests):
+                                        post_json_with_retry(
+                                            f"{proxy['base_url']}/completion",
+                                            {
+                                                "prompt": "warmup",
+                                                "n_predict": 8,
+                                                "temperature": 0.0,
+                                                "stream": False,
+                                            },
+                                            request_timeout,
+                                            retry_attempts,
+                                            retry_sleep_s,
+                                        )
 
-                            batch_label = (
-                                "default" if batch_size is None else str(batch_size)
-                            )
-                            ubatch_label = (
-                                "default" if ubatch_size is None else str(ubatch_size)
-                            )
-                            for concurrency in concurrency_list:
-                                if total_requests_env:
-                                    total_requests = int(total_requests_env)
-                                else:
-                                    total_requests = max(
-                                        1, concurrency * requests_multiplier
+                                for concurrency in concurrency_list:
+                                    if total_requests_env:
+                                        total_requests = int(total_requests_env)
+                                    else:
+                                        total_requests = max(
+                                            1, concurrency * requests_multiplier
+                                        )
+                                    try:
+                                        result = run_batch(
+                                            proxy["base_url"],
+                                            prompt,
+                                            n_predict,
+                                            concurrency,
+                                            total_requests,
+                                            temperature,
+                                            request_timeout,
+                                            retry_attempts,
+                                            retry_sleep_s,
+                                        )
+                                    except Exception as exc:
+                                        print(
+                                            "error "
+                                            f"instances={instances} "
+                                            f"parallel={parallel} "
+                                            f"batch={batch_label} "
+                                            f"ubatch={ubatch_label} "
+                                            f"concurrency={concurrency}: {exc}",
+                                            file=sys.stderr,
+                                        )
+                                        if not continue_on_error:
+                                            raise
+                                        print(
+                                            "failing_row "
+                                            f"{instances},{parallel},{batch_label},"
+                                            f"{ubatch_label},{concurrency},"
+                                            "0.0,0,0.00,"
+                                            f"{total_requests}"
+                                        )
+                                        if cell_pause_s > 0:
+                                            time.sleep(cell_pause_s)
+                                        continue
+
+                                    print(
+                                        f"{instances},{parallel},{batch_label},"
+                                        f"{ubatch_label},{concurrency},"
+                                        f"{result['throughput']:.1f},"
+                                        f"{result['total_tokens']},"
+                                        f"{result['elapsed']:.2f},"
+                                        f"{result['errors']}"
                                     )
-                                result = run_batch(
-                                    proxy["base_url"],
-                                    prompt,
-                                    n_predict,
-                                    concurrency,
-                                    total_requests,
-                                    temperature,
-                                    request_timeout,
-                                    retry_attempts,
-                                    retry_sleep_s,
-                                )
-                                print(
-                                    f"{instances},{parallel},{batch_label},"
-                                    f"{ubatch_label},{concurrency},"
-                                    f"{result['throughput']:.1f},"
-                                    f"{result['total_tokens']},"
-                                    f"{result['elapsed']:.2f},"
-                                    f"{result['errors']}"
-                                )
-                                if result["throughput"] > best["throughput"]:
-                                    best = {
-                                        "throughput": result["throughput"],
-                                        "instances": instances,
-                                        "parallel": parallel,
-                                        "batch": batch_label,
-                                        "ubatch": ubatch_label,
-                                        "concurrency": concurrency,
-                                    }
-                                if cell_pause_s > 0:
-                                    time.sleep(cell_pause_s)
+                                    if result["throughput"] > best["throughput"]:
+                                        best = {
+                                            "throughput": result["throughput"],
+                                            "instances": instances,
+                                            "parallel": parallel,
+                                            "batch": batch_label,
+                                            "ubatch": ubatch_label,
+                                            "concurrency": concurrency,
+                                        }
+                                    if cell_pause_s > 0:
+                                        time.sleep(cell_pause_s)
+                    except Exception as exc:
+                        print(
+                            "error "
+                            f"instances={instances} "
+                            f"parallel={parallel} "
+                            f"batch={batch_label} "
+                            f"ubatch={ubatch_label}: {exc}",
+                            file=sys.stderr,
+                        )
+                        if not continue_on_error:
+                            raise
+                        continue
 
     print(
         "best "

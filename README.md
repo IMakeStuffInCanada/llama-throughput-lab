@@ -138,6 +138,7 @@ You can supply overrides in the launcher (space-separated `KEY=VALUE` pairs), or
 - `LLAMA_BATCH_LIST`: list for `--batch-size` (round-robin/full sweep, use `default` to skip).
 - `LLAMA_UBATCH_LIST`: list for `--ubatch` (round-robin/full sweep, use `default` to skip).
 - `LLAMA_REQUESTS_MULTIPLIER`: if `LLAMA_NUM_REQUESTS` is unset, total requests = concurrency * multiplier.
+- `LLAMA_CONTINUE_ON_ERROR`: set to `0` to stop on the first failing config (default continues).
 - `LLAMA_REQUEST_TIMEOUT`: per-request timeout (seconds).
 - `LLAMA_RETRY_ATTEMPTS`: retries for transient HTTP errors.
 - `LLAMA_RETRY_SLEEP_S`: base retry backoff (seconds).

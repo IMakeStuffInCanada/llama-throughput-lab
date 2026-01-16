@@ -144,6 +144,11 @@ def main():
     total_requests_env = os.environ.get("LLAMA_NUM_REQUESTS")
     requests_multiplier = int(os.environ.get("LLAMA_REQUESTS_MULTIPLIER", "1"))
     cell_pause_s = float(os.environ.get("LLAMA_CELL_PAUSE_S", "0.0"))
+    continue_on_error = os.environ.get("LLAMA_CONTINUE_ON_ERROR", "1").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
 
     warmup_requests = int(os.environ.get("LLAMA_WARMUP_REQUESTS", "2"))
 
@@ -163,84 +168,94 @@ def main():
     for batch_size in batch_list:
         for ubatch_size in ubatch_list:
             extra_args = _build_server_args(base_args, batch_size, ubatch_size)
-            with start_llama_servers(
-                instance_count,
-                base_port=base_port,
-                ready_timeout_s=ready_timeout_s,
-                startup_delay_s=startup_delay_s,
-                extra_args=extra_args,
-            ) as servers:
-                upstreams = [(server["host"], server["port"]) for server in servers]
-                with start_nginx_round_robin(
-                    upstreams,
-                    listen_port=nginx_port,
-                    listen_host=servers[0]["host"],
-                ) as proxy:
-                    if warmup_requests > 0:
-                        for _ in range(warmup_requests):
-                            post_json_with_retry(
-                                f"{proxy['base_url']}/completion",
-                                {
-                                    "prompt": "warmup",
-                                    "n_predict": 8,
-                                    "temperature": 0.0,
-                                    "stream": False,
-                                },
-                            )
+            batch_label = "default" if batch_size is None else str(batch_size)
+            ubatch_label = "default" if ubatch_size is None else str(ubatch_size)
+            try:
+                with start_llama_servers(
+                    instance_count,
+                    base_port=base_port,
+                    ready_timeout_s=ready_timeout_s,
+                    startup_delay_s=startup_delay_s,
+                    extra_args=extra_args,
+                ) as servers:
+                    upstreams = [(server["host"], server["port"]) for server in servers]
+                    with start_nginx_round_robin(
+                        upstreams,
+                        listen_port=nginx_port,
+                        listen_host=servers[0]["host"],
+                    ) as proxy:
+                        if warmup_requests > 0:
+                            for _ in range(warmup_requests):
+                                post_json_with_retry(
+                                    f"{proxy['base_url']}/completion",
+                                    {
+                                        "prompt": "warmup",
+                                        "n_predict": 8,
+                                        "temperature": 0.0,
+                                        "stream": False,
+                                    },
+                                )
 
-                    batch_label = (
-                        "default" if batch_size is None else str(batch_size)
-                    )
-                    ubatch_label = (
-                        "default" if ubatch_size is None else str(ubatch_size)
-                    )
-                    print(f"\nbatch={batch_label} ubatch={ubatch_label}")
-                    col_width = max(7, max(len(str(c)) for c in concurrency_list))
-                    header = ["max_tokens \\ conc".rjust(15)]
-                    header += [str(c).rjust(col_width) for c in concurrency_list]
-                    print(" ".join(header))
-                    print("-" * (len(header) * (col_width + 1)))
+                        print(f"\nbatch={batch_label} ubatch={ubatch_label}")
+                        col_width = max(7, max(len(str(c)) for c in concurrency_list))
+                        header = ["max_tokens \\ conc".rjust(15)]
+                        header += [str(c).rjust(col_width) for c in concurrency_list]
+                        print(" ".join(header))
+                        print("-" * (len(header) * (col_width + 1)))
 
-                    for max_tokens in max_tokens_list:
-                        row = [str(max_tokens).rjust(15)]
-                        for concurrency in concurrency_list:
-                            if total_requests_env:
-                                total_requests = int(total_requests_env)
-                            else:
-                                total_requests = max(
-                                    1, concurrency * requests_multiplier
-                                )
-                            throughput = None
-                            try:
-                                throughput = run_batch(
-                                    proxy["base_url"],
-                                    prompt,
-                                    max_tokens,
-                                    concurrency,
-                                    total_requests,
-                                    temperature,
-                                )
-                            except Exception as exc:
-                                print(
-                                    f"error max_tokens={max_tokens} "
-                                    f"concurrency={concurrency}: {exc}",
-                                    file=sys.stderr,
-                                )
-                            if (
-                                throughput is not None
-                                and throughput > best["throughput"]
-                            ):
-                                best = {
-                                    "throughput": throughput,
-                                    "tokens": max_tokens,
-                                    "concurrency": concurrency,
-                                    "batch": batch_label,
-                                    "ubatch": ubatch_label,
-                                }
-                            row.append(_format_cell(throughput, col_width))
-                            if cell_pause_s > 0:
-                                time.sleep(cell_pause_s)
-                        print(" ".join(row))
+                        for max_tokens in max_tokens_list:
+                            row = [str(max_tokens).rjust(15)]
+                            for concurrency in concurrency_list:
+                                if total_requests_env:
+                                    total_requests = int(total_requests_env)
+                                else:
+                                    total_requests = max(
+                                        1, concurrency * requests_multiplier
+                                    )
+                                throughput = None
+                                try:
+                                    throughput = run_batch(
+                                        proxy["base_url"],
+                                        prompt,
+                                        max_tokens,
+                                        concurrency,
+                                        total_requests,
+                                        temperature,
+                                    )
+                                except Exception as exc:
+                                    print(
+                                        "error "
+                                        f"batch={batch_label} "
+                                        f"ubatch={ubatch_label} "
+                                        f"max_tokens={max_tokens} "
+                                        f"concurrency={concurrency}: {exc}",
+                                        file=sys.stderr,
+                                    )
+                                    if not continue_on_error:
+                                        raise
+                                if (
+                                    throughput is not None
+                                    and throughput > best["throughput"]
+                                ):
+                                    best = {
+                                        "throughput": throughput,
+                                        "tokens": max_tokens,
+                                        "concurrency": concurrency,
+                                        "batch": batch_label,
+                                        "ubatch": ubatch_label,
+                                    }
+                                row.append(_format_cell(throughput, col_width))
+                                if cell_pause_s > 0:
+                                    time.sleep(cell_pause_s)
+                            print(" ".join(row))
+            except Exception as exc:
+                print(
+                    f"error batch={batch_label} ubatch={ubatch_label}: {exc}",
+                    file=sys.stderr,
+                )
+                if not continue_on_error:
+                    raise
+                continue
 
     print(
         "best "
