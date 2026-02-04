@@ -43,6 +43,10 @@ def build_commands(python_bin: str) -> Dict[str, Tuple[str, List[str]]]:
             "Full sweep (instances x parallel x concurrency)",
             [python_bin, "scripts/full_sweep.py"],
         ),
+        "7": (
+            "Instance sweep (2-16 instances x parallel x concurrency)",
+            [python_bin, "scripts/instance_sweep.py"],
+        ),
     }
 
 
