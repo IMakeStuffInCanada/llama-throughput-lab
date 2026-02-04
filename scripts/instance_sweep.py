@@ -45,18 +45,19 @@ def run_test(instances, parallel, concurrency, max_tokens, warmup_requests, ngin
     
     try:
         with start_llama_servers(
-            num_instances=instances,
+            instances,
             base_port=base_port,
-            server_args=server_args
+            extra_args=server_args.split()
         ) as servers:
             
+            upstreams = [(s["host"], s["port"]) for s in servers]
             with start_nginx_round_robin(
-                num_instances=instances,
-                base_port=base_port,
-                nginx_port=nginx_port
-            ) as nginx_proc:
+                upstreams,
+                listen_port=nginx_port,
+                listen_host=servers[0]["host"]
+            ) as proxy:
                 
-                url = f"http://127.0.0.1:{nginx_port}/completion"
+                url = f"{proxy['base_url']}/completion"
                 
                 # Warmup
                 print(f"  Warmup ({warmup_requests} requests)...")
