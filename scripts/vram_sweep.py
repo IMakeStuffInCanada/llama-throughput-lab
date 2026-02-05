@@ -243,7 +243,7 @@ def main():
     # Fixed parallel and concurrency for this sweep
     parallel_list = parse_int_list(
         os.environ.get("LLAMA_PARALLEL_LIST"),
-        "1,2,4,8,16,32,64",
+        "16,32,64",
     )
     batch_list = parse_optional_int_list(
         os.environ.get("LLAMA_BATCH_LIST"),
