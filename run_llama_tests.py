@@ -17,7 +17,7 @@ TESTS = {
     "4": ("Sweeps: Threads (--threads/--threads-http)", ["tests/test_llama_server_threads_sweep.py"]),
     "5": ("Sweeps: Round-robin (max_tokens x concurrency)", ["scripts/round_robin_sweep.py"]),
     "6": ("Sweeps: Full (instances x parallel x concurrency)", ["scripts/full_sweep.py"]),
-    "7": ("Sweeps: Instance sweep (2-16 instances x parallel x concurrency)", ["scripts/instance_sweep.py"]),
+    "7": ("Sweeps: VRAM sweep Multi GPU)", ["scripts/vram_sweep_multigpu.py"]),
     "8": ("Sweeps: VRAM sweep (4+ instances up to the max within the VRAM envelope)", ["scripts/vram_sweep.py"]),
 
 }
