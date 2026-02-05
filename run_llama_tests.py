@@ -18,6 +18,7 @@ TESTS = {
     "5": ("Sweeps: Round-robin (max_tokens x concurrency)", ["scripts/round_robin_sweep.py"]),
     "6": ("Sweeps: Full (instances x parallel x concurrency)", ["scripts/full_sweep.py"]),
     "7": ("Sweeps: Instance sweep (2-16 instances x parallel x concurrency)", ["scripts/instance_sweep.py"]),
+    "8": ("SWeeps: VRAM sweep (4+ instances up to the max within the VRAM envelope)"),
 }
 
 
