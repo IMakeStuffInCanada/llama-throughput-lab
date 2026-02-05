@@ -30,23 +30,45 @@ from tests.llama_server_test_utils import (
 
 
 def get_all_gpu_memory_mb():
-    """Get memory info for all GPUs using nvidia-smi"""
+    """Get memory info for GPUs, respecting CUDA_VISIBLE_DEVICES"""
     try:
+        # Check if CUDA_VISIBLE_DEVICES is set
+        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '').strip()
+        
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=index,memory.total,memory.free", "--format=csv,noheader,nounits"],
             capture_output=True,
             text=True,
             check=True
         )
-        gpus = []
+        
+        all_gpus = []
         for line in result.stdout.strip().split('\n'):
             if line.strip():
                 parts = line.split(',')
                 gpu_id = int(parts[0].strip())
                 total = int(parts[1].strip())
                 free = int(parts[2].strip())
-                gpus.append((gpu_id, total, free))
-        return gpus
+                all_gpus.append((gpu_id, total, free))
+        
+        # Filter based on CUDA_VISIBLE_DEVICES if set
+        if cuda_visible:
+            try:
+                visible_ids = [int(x.strip()) for x in cuda_visible.split(',') if x.strip().isdigit()]
+                if visible_ids:
+                    # Filter to only visible GPUs and renumber them starting from 0
+                    filtered_gpus = []
+                    for new_id, physical_id in enumerate(visible_ids):
+                        for gpu_id, total, free in all_gpus:
+                            if gpu_id == physical_id:
+                                # Use new_id (0, 1, 2...) as the logical GPU ID for CUDA
+                                filtered_gpus.append((new_id, total, free))
+                                break
+                    return filtered_gpus
+            except ValueError:
+                pass  # Fall through to return all GPUs
+        
+        return all_gpus
     except Exception as e:
         print(f"Warning: Could not query GPU memory: {e}", file=sys.stderr)
         return []
@@ -144,7 +166,12 @@ def start_llama_server_on_gpu(
     
     # Prepare environment with GPU pinning
     env = os.environ.copy()
-    env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+    # Only set CUDA_VISIBLE_DEVICES if not already restricted by parent
+    # If parent already set it (e.g., via menu), gpu_id is already the correct logical ID
+    if 'CUDA_VISIBLE_DEVICES' not in os.environ or os.environ.get('CUDA_VISIBLE_DEVICES', '').count(',') > 0:
+        # Either not set, or multiple GPUs visible - pin to specific GPU
+        env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+    # else: parent already restricted to single GPU, use that
     
     # Remove tensor-split from args if present (not needed for single-GPU instances)
     cleaned_args = []
