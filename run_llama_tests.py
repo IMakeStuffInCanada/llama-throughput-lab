@@ -263,12 +263,40 @@ def parse_env_overrides(raw):
     return overrides
 
 
+def detect_gpus():
+    """
+    Detect available GPUs using nvidia-smi
+    Returns list of (gpu_id, name, total_mb) tuples
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,name,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5
+        )
+        gpus = []
+        for line in result.stdout.strip().split('\n'):
+            if line:
+                parts = line.split(', ')
+                if len(parts) >= 3:
+                    gpu_id = int(parts[0])
+                    name = parts[1]
+                    total_mb = int(float(parts[2]))
+                    gpus.append((gpu_id, name, total_mb))
+        return gpus
+    except Exception:
+        return []
+
+
 class AppState:
     def __init__(self):
         self.model_path = auto_detect_model()
         self.server_bin = auto_detect_server_bin()
         self.env_overrides = ""
         self.test_key = "1"
+        self.gpu_selection = "both"  # "0", "1", or "both"
         self.n_predict = int(os.environ.get("LLAMA_N_PREDICT", "128"))
         self.max_tokens_list = os.environ.get("LLAMA_MAX_TOKENS_LIST", "128,256,512,1024")
         self.concurrency_list = os.environ.get(
@@ -312,6 +340,39 @@ def select_model(state):
     selection = custom_file_picker(start_path)
     if selection:
         state.model_path = selection
+
+
+def select_gpu(state):
+    """
+    Show GPU selection menu
+    """
+    gpus = detect_gpus()
+    
+    menu_items = []
+    
+    if gpus:
+        for gpu_id, name, total_mb in gpus:
+            label = f"GPU {gpu_id}: {name} ({total_mb} MB)"
+            menu_items.extend([str(gpu_id), label])
+        menu_items.extend(["both", "All GPUs"])
+    else:
+        menu_items.extend([
+            "0", "GPU 0 (default)",
+            "1", "GPU 1",
+            "both", "All GPUs"
+        ])
+    
+    menu_items.extend(["back", "Back"])
+    
+    selection, code = run_dialog([
+        "--title", "Select GPU",
+        "--menu", "Choose which GPU(s) to use for testing:",
+        "18", "70", str(len(menu_items) // 2),
+        *menu_items
+    ])
+    
+    if code == 0 and selection and selection != "back":
+        state.gpu_selection = selection
 
 
 def edit_env_overrides(state):
@@ -457,6 +518,11 @@ def run_selected(state):
 
     env = os.environ.copy()
     env.update(overrides)
+    
+    # Apply GPU selection
+    if state.gpu_selection != "both":
+        env["CUDA_VISIBLE_DEVICES"] = state.gpu_selection
+    
     env["PYTHONPATH"] = os.pathsep.join(
         [str(SCRIPT_DIR), env.get("PYTHONPATH", "")]
     ).strip(os.pathsep)
@@ -511,6 +577,10 @@ def run_round_robin(state, action):
 
     env = os.environ.copy()
     env.update(overrides)
+    
+    # Apply GPU selection
+    if state.gpu_selection != "both":
+        env["CUDA_VISIBLE_DEVICES"] = state.gpu_selection
 
     subprocess.run(["clear"])
     print("=== Round-robin Servers ===")
@@ -672,6 +742,12 @@ def main_menu():
         model_display = Path(state.model_path).name if state.model_path else "(None)"
         server_display = Path(state.server_bin).name if state.server_bin else "(Auto)"
         env_display = state.env_overrides if state.env_overrides else "(None)"
+        
+        # GPU display
+        if state.gpu_selection == "both":
+            gpu_display = "All GPUs"
+        else:
+            gpu_display = f"GPU {state.gpu_selection}"
 
         tokens_display = f"{state.n_predict} / {state.max_tokens_list}"
         menu = [
@@ -684,7 +760,7 @@ def main_menu():
             "Select an option to configure or run:",
             "20",
             "70",
-            "10",
+            "11",
             "1",
             f"Test:   {state.test_label}",
             "2",
@@ -694,12 +770,14 @@ def main_menu():
             "4",
             f"Tokens: {tokens_display}",
             "5",
-            f"Env:    {env_display}",
+            f"GPU:    {gpu_display}",
             "6",
-            "RUN SELECTED TEST",
+            f"Env:    {env_display}",
             "7",
-            "CONFIGURE AND RUN ROUND ROBIN",
+            "RUN SELECTED TEST",
             "8",
+            "CONFIGURE AND RUN ROUND ROBIN",
+            "9",
             "Exit",
         ]
 
@@ -716,12 +794,14 @@ def main_menu():
         elif choice == "4":
             tokens_menu(state)
         elif choice == "5":
-            edit_env_overrides(state)
+            select_gpu(state)
         elif choice == "6":
-            run_selected(state)
+            edit_env_overrides(state)
         elif choice == "7":
-            round_robin_menu(state)
+            run_selected(state)
         elif choice == "8":
+            round_robin_menu(state)
+        elif choice == "9":
             break
 
     subprocess.run(["clear"])
